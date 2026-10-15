@@ -831,15 +831,3 @@ GitAutoBackup -run
 ```
 
 After that, Windows Task Scheduler handles the recurring backups.
-
----
-
-# License
-
-Choose and add a license appropriate for your project, for example MIT:
-
-```text
-MIT License
-```
-
-If this project is intended to be distributed publicly, include a `LICENSE` file containing the complete license text.
