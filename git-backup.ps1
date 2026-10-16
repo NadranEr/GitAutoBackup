@@ -181,6 +181,34 @@ Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force; if 
 
 
 ---------------------------------------------------------------------
+ WORKING OFFLINE
+---------------------------------------------------------------------
+  No problem. A backup is first saved as a commit on your PC, and only
+  then uploaded. If you are offline, the upload fails and the log says
+  "offline? push failed, will retry at next run". Your work is saved
+  locally, but not yet protected against losing the PC.
+
+  At every following run, the script checks whether commits are
+  waiting for upload, and sends them all at once as soon as you are
+  back online. This happens even if your files did not change in the
+  meantime. To see what is waiting, type in the repo:   git status -sb
+  ("ahead 3" means 3 commits not uploaded yet).
+
+
+---------------------------------------------------------------------
+ WHAT THE LOG LINES MEAN
+---------------------------------------------------------------------
+  backup pushed (branch)      Changes saved and uploaded.
+  pushed pending commits      Nothing new, but commits waiting from an
+                              earlier run (offline?) were uploaded now.
+  no changes                  Nothing to save, nothing waiting.
+  offline? push failed ...    Saved on your PC. Upload retried later.
+  skipped: ...                Merge/rebase/detached HEAD, see above.
+  ERROR: ...                  Something needs fixing, see
+                              TROUBLESHOOTING.
+
+
+---------------------------------------------------------------------
  GOOD TO KNOW
 ---------------------------------------------------------------------
   - Tasks only run while you are logged in to Windows (so Git can use
@@ -316,6 +344,8 @@ NOTES
   - Log file: git-backup.log, next to this script.
   - Backups are skipped during a merge/rebase/cherry-pick/revert and
     on a detached HEAD (a "skipped: ..." line is written in the log).
+  - Offline: backups are saved on this PC and uploaded at the next run
+    once you are back online.
 
 '@
 }
@@ -460,27 +490,53 @@ function Invoke-Backup {
             return
         }
 
+        # --- 1. Save file changes as a commit (if any) ------------------
         # "git status --porcelain" prints nothing when no file has changed.
-        $changes = git status --porcelain
-
+        $committed = $false
+        $changes   = git status --porcelain
         if ($changes) {
-            # 1. Stage all changes (new, modified and deleted files).
+            # Stage all changes (new, modified and deleted files).
             git add -A
             if ($LASTEXITCODE -ne 0) { throw "git add failed" }
 
-            # 2. Save them as a commit, named with the branch and the time.
+            # Save them as a commit, named with the branch and the time.
+            # This works offline: the commit is stored on your PC.
             $stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
             $out = git commit -m "Auto backup ($branch) $stamp" 2>&1
             if ($LASTEXITCODE -ne 0) { throw "git commit failed: $out" }
+            $committed = $true
+        }
 
-            # 3. Upload the commit to the remote (GitLab, GitHub, ...).
-            $out = git push origin HEAD 2>&1
-            if ($LASTEXITCODE -ne 0) { throw "git push failed: $out" }
+        # --- 2. Is anything waiting to be uploaded? ----------------------
+        # Either the commit just made, or commits from an earlier run
+        # whose upload failed (for example because you were offline).
+        $ahead = git rev-list --count "origin/$branch..HEAD" 2>$null
+        if ($LASTEXITCODE -ne 0) { $pending = $true }   # branch not on the remote yet
+        else { $pending = ([int]$ahead -gt 0) }
 
-            Write-Log "backup pushed ($branch)"
+        if (-not $committed -and -not $pending) {
+            Write-Log "no changes"
+            return
+        }
+
+        # --- 3. Upload to the remote (GitLab, GitHub, ...) ---------------
+        $out  = git push origin HEAD 2>&1
+        $code = $LASTEXITCODE
+        if ($code -eq 0) {
+            if ($committed) { Write-Log "backup pushed ($branch)" }
+            else            { Write-Log "pushed pending commits ($branch)" }
         }
         else {
-            Write-Log "no changes"
+            $msg = (($out | Out-String) -replace '\s+', ' ').Trim()
+            if ($msg.Length -gt 300) { $msg = $msg.Substring(0, 300) + "..." }
+            # Network problems are not an error: the work is saved on this
+            # PC and the upload is retried automatically at the next run.
+            if ($msg -match 'Could not resolve host|Failed to connect|Network is unreachable|timed out|Connection (refused|reset)|No route to host|Temporary failure in name resolution') {
+                Write-Log "offline? push failed, will retry at next run (saved on this PC). $msg"
+            }
+            else {
+                throw "git push failed: $msg"
+            }
         }
     }
     catch {
